@@ -244,58 +244,12 @@ void NGC_Exporter::export_layer(shared_ptr<Layer> layer, string of_name, boost::
     shared_ptr<RoutingMill> mill = layer->get_manufacturer();
     vector<pair<coordinate_type_fp, multi_linestring_type_fp>> all_toolpaths = layer->get_toolpaths();
 
+    if(leveller){
+        throw std::invalid_argument("Autoleveller is NOT supported");
+    }
+
     if (all_toolpaths.size() < 1) {
       return; // Nothing to do.
-    }
-
-    globalVars.getUniqueCode();
-    globalVars.getUniqueCode();
-
-    // open output file
-    std::ofstream of;
-    of.open(of_name);
-    if (!of.is_open()) {
-      std::stringstream error_message;
-      error_message << "Can't open for writing: " << of_name;
-      throw std::invalid_argument(error_message.str());
-    }
-
-    // write header to .ngc file
-    for ( string s : header )
-    {
-        of << "( " << s << " )\n";
-    }
-
-    if( leveller || ( tileInfo.enabled && tileInfo.software != Software::CUSTOM ) )
-        of << "( Gcode for " << tileInfo.software << " )\n";
-    else
-        of << "( Software-independent Gcode )\n";
-
-    of.setf(ios_base::fixed);      //write floating-point values in fixed-point notation
-    of.precision(5);              //Set floating-point decimal precision
-
-    of << "\n" << preamble;       //insert external preamble
-
-    if (bMetricoutput) {
-      of << "G94 ( Millimeters per minute feed rate. )\n"
-         << "G21 ( Units == Millimeters. )\n\n";
-    } else {
-      of << "G94 ( Inches per minute feed rate. )\n"
-         << "G20 ( Units == INCHES. )\n\n";
-    }
-
-    of << "G90 ( Absolute coordinates. )\n"
-       << "G00 S" << left << mill->speed << " ( RPM spindle speed. )\n";
-
-    if (mill->explicit_tolerance) {
-      of << "G64 P" << mill->tolerance * cfactor << " ( set maximum deviation from commanded toolpath )\n";
-    }
-
-    of << "G01 F" << mill->feed * cfactor << " ( Feedrate. )\n\n";
-
-    if (leveller) {
-      leveller->prepareWorkarea(all_toolpaths);
-      leveller->header(of);
     }
 
     shared_ptr<Cutter> cutter = dynamic_pointer_cast<Cutter>(mill);
@@ -304,25 +258,79 @@ void NGC_Exporter::export_layer(shared_ptr<Layer> layer, string of_name, boost::
     // One list of bridges for each path.
     vector<vector<size_t>> all_bridges;
     if (cutter) {
-      for (auto& path : all_toolpaths[0].second) {  // Cutter layer can only have one tool_diameter.
-        auto bridges = layer->get_bridges(path);
-        all_bridges.push_back(bridges);
-      }
+        for (auto& path : all_toolpaths[0].second) {  // Cutter layer can only have one tool_diameter.
+            auto bridges = layer->get_bridges(path);
+            all_bridges.push_back(bridges);
+        }
     }
+
+    globalVars.getUniqueCode();
+    globalVars.getUniqueCode();
+
+
+//    if (leveller) {
+//      leveller->prepareWorkarea(all_toolpaths);
+//      leveller->header(of);
+//    }
+
 
     uniqueCodes main_sub_ocodes(200);
     for (size_t toolpaths_index = 0; toolpaths_index < all_toolpaths.size(); toolpaths_index++) {
+        // open output file
+        std::ofstream of;
+
+        auto leadp_tool_diameter = all_toolpaths[toolpaths_index].first * (bMetricoutput ? 25.4 : 1.0);
+
+        auto real_name = of_name.substr(0, of_name.size()-4) + "_" + to_string(leadp_tool_diameter) + ".ngc";
+        of.open(real_name);
+        if (!of.is_open()) {
+            std::stringstream error_message;
+            error_message << "Can't open for writing: " << real_name;
+            throw std::invalid_argument(error_message.str());
+        }
+
+        // write header to .ngc file
+        for ( string s : header )
+        {
+            of << "( " << s << " )\n";
+        }
+
+        if( leveller || ( tileInfo.enabled && tileInfo.software != Software::CUSTOM ) )
+            of << "( Gcode for " << tileInfo.software << " )\n";
+        else
+            of << "( Software-independent Gcode )\n";
+
+        of.setf(ios_base::fixed);      //write floating-point values in fixed-point notation
+        of.precision(5);              //Set floating-point decimal precision
+
+        of << "\n" << preamble;       //insert external preamble
+
+        if (bMetricoutput) {
+            of << "G94 ( Millimeters per minute feed rate. )\n"
+               << "G21 ( Units == Millimeters. )\n\n";
+        } else {
+            of << "G94 ( Inches per minute feed rate. )\n"
+               << "G20 ( Units == INCHES. )\n\n";
+        }
+
+        of << "G90 ( Absolute coordinates. )\n"
+           << "G00 S" << left << mill->speed << " ( RPM spindle speed. )\n";
+
+        if (mill->explicit_tolerance) {
+            of << "G64 P" << mill->tolerance * cfactor << " ( set maximum deviation from commanded toolpath )\n";
+        }
+
+        of << "G01 F" << mill->feed * cfactor << " ( Feedrate. )\n\n";
+
       const auto& toolpaths = all_toolpaths[toolpaths_index].second;
       if (toolpaths.size() < 1) {
         continue; // Nothing to do for this mill size.
       }
       Tiling tiling(tileInfo, cfactor, main_sub_ocodes.getUniqueCode());
-      if (toolpaths_index == all_toolpaths.size() - 1) {
         tiling.setGCodeEnd(string("\nG04 P0 ( dwell for no time -- G64 should not smooth over this point )\n")
                            + (bZchangeG53 ? "G53 " : "") + "G00 Z" + str( format("%.6f") % ( mill->zchange * cfactor ) ) +
                            " ( retract )\n\n" + postamble + "M5 ( Spindle off. )\nG04 P" +
                            to_string(mill->spindown_time) + "\n");
-      }
 
       // Start the new tool.
       of << endl
@@ -384,15 +392,15 @@ void NGC_Exporter::export_layer(shared_ptr<Layer> layer, string of_name, boost::
       }
 
       tiling.footer( of );
-    }
-    if (leveller) {
-      leveller->footer(of);
-    }
-    of << "M9 ( Coolant off. )" << endl
-       << "M2 ( Program end. )" << endl << endl;
+        if (leveller) {
+            leveller->footer(of);
+        }
+        of << "M9 ( Coolant off. )" << endl
+           << "M2 ( Program end. )" << endl << endl;
 
 
-    of.close();
+        of.close();
+    }
 }
 
 /******************************************************************************/
